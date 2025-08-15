@@ -7,17 +7,16 @@ use egui_plot::{GridMark, Line, Plot, PlotPoint, PlotPoints};
 use jiff::{Unit, fmt::strtime, tz::TimeZone};
 
 const PLOT_WIDTH: f32 = 450.0;
-const PLOT_HEIGHT: f32 = 120.0;
+const PLOT_HEIGHT: f32 = 125.0;
 const PLOT_LINK_AXIS_NAME: &'static str = "linked";
-const PLOT_SPACE: f32 = 8.0;
 
 fn main() -> eframe::Result {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            // .with_resizable(false)
-            .with_inner_size([480.0, 720.0]),
+            .with_resizable(false)
+            .with_inner_size([480.0, 760.0]),
         ..Default::default()
     };
 
@@ -27,10 +26,10 @@ fn main() -> eframe::Result {
 
     eframe::run_simple_native("Aranet4", options, move |ctx, _frame| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Aranet4");
             if ui.button("Refresh").clicked() {
                 linked_axes_demo.refresh().unwrap();
             }
+            ui.add_space(5.0);
             linked_axes_demo.ui(ui);
         });
     })
@@ -58,13 +57,9 @@ impl LinkedAxesDemo {
             .show(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                 self.plot_temperature(ui);
-                ui.add_space(PLOT_SPACE);
                 self.plot_pressure(ui);
-                ui.add_space(PLOT_SPACE);
                 self.plot_co2(ui);
-                ui.add_space(PLOT_SPACE);
                 self.plot_humidity(ui);
-                ui.add_space(PLOT_SPACE);
                 self.plot_battery(ui)
             })
             .inner
@@ -110,7 +105,7 @@ impl LinkedAxesDemo {
         let label = egui::Label::new(
             egui::RichText::new(title)
                 .size(14.0)
-                .color(Color32::BLACK)
+                .color(Color32::LIGHT_GRAY)
                 .strong(),
         );
         let (_, galley, label_response) = label.layout_in_ui(ui);
@@ -123,12 +118,12 @@ impl LinkedAxesDemo {
                     label_response.rect.height() + 14.,
                 ),
         );
-        if !ui.rect_contains_pointer(external_rect.scale_from_center(1.5)) {
+        if !ui.rect_contains_pointer(plot_rect) {
             bg_ui.put(external_rect, |ui: &mut egui::Ui| {
                 ui.painter().rect_filled(
                     ui.max_rect(),
                     egui::CornerRadius::default().at_least(2),
-                    egui::Color32::from_white_alpha(0xD9),
+                    egui::Color32::from_black_alpha(0xAA),
                 );
                 ui.painter().add(egui::epaint::TextShape::new(
                     plot_rect.left_top() + Vec2::splat(12.0),
@@ -146,7 +141,7 @@ impl LinkedAxesDemo {
     fn plot_temperature(&self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
-            "Temperature (°C)",
+            "Temperature",
             Color32::GREEN,
             |_name, point| {
                 let nanosecond = (point.x * 1_000_000.0) as i128;
@@ -170,7 +165,7 @@ impl LinkedAxesDemo {
     fn plot_pressure(&self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
-            "Pressure (hPa)",
+            "Pressure",
             Color32::BLUE,
             |_name, point| {
                 let nanosecond = (point.x * 1_000_000.0) as i128;
@@ -194,7 +189,7 @@ impl LinkedAxesDemo {
     fn plot_co2(&self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
-            "CO₂ (ppm)",
+            "CO₂",
             Color32::WHITE,
             |_name, point| {
                 let nanosecond = (point.x * 1_000_000.0) as i128;
@@ -218,7 +213,7 @@ impl LinkedAxesDemo {
     fn plot_humidity(&self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
-            "Humidity (%)",
+            "Humidity",
             Color32::CYAN,
             |_name, point| {
                 let nanosecond = (point.x * 1_000_000.0) as i128;
@@ -242,7 +237,7 @@ impl LinkedAxesDemo {
     fn plot_battery(&self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
-            "Battery (%)",
+            "Battery",
             Color32::YELLOW,
             |_name, point| {
                 let nanosecond = (point.x * 1_000_000.0) as i128;
