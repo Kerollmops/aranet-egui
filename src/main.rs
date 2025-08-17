@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::{f32, io, ops::RangeInclusive, path::Path};
+use std::{f32, io, ops::RangeInclusive, path::Path, time::Duration};
 
+use anyhow::Context;
 use eframe::egui::{self, Color32, Response, ScrollArea, TextWrapMode, Vec2, Vec2b};
 use egui_plot::{GridMark, Line, Plot, PlotPoint, PlotPoints};
 use jiff::{Unit, fmt::strtime, tz::TimeZone};
@@ -21,14 +22,20 @@ fn main() -> eframe::Result {
     };
 
     // Our application state:
-    let mut linked_axes_demo = LinkedAxesDemo::default();
+    let mut linked_axes_demo = LinkedPropertiesPlots::default();
     linked_axes_demo.refresh().unwrap();
 
     eframe::run_simple_native("Aranet4", options, move |ctx, _frame| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            if ui.button("Refresh").clicked() {
-                linked_axes_demo.refresh().unwrap();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Refresh").clicked() {
+                    linked_axes_demo.refresh().unwrap();
+                }
+                if ui.button("Reset").clicked() {
+                    linked_axes_demo.initialized = false;
+                }
+                ui.checkbox(&mut linked_axes_demo.show_battery, "Show Battery")
+            });
             ui.add_space(5.0);
             linked_axes_demo.ui(ui);
         });
@@ -36,12 +43,14 @@ fn main() -> eframe::Result {
 }
 
 #[derive(Default)]
-struct LinkedAxesDemo {
+struct LinkedPropertiesPlots {
     records: Vec<Record>,
+    show_battery: bool,
+    initialized: bool,
 }
 
-impl LinkedAxesDemo {
-    fn refresh(&mut self) -> io::Result<()> {
+impl LinkedPropertiesPlots {
+    pub fn refresh(&mut self) -> io::Result<()> {
         let path = Path::new("../aranet2sonnerie/measurements.son");
         let db = sonnerie::DatabaseReader::new(&path)?;
         let reader = db.get("aranet4");
@@ -52,6 +61,12 @@ impl LinkedAxesDemo {
         Ok(())
     }
 
+    pub fn last_refresh_time(&self) -> Option<jiff::Timestamp> {
+        self.records
+            .last()
+            .map(|record| jiff::Timestamp::from_nanosecond(record.timestamp_nanos as i128).unwrap())
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui) -> Response {
         ScrollArea::horizontal()
             .show(ui, |ui| {
@@ -60,13 +75,16 @@ impl LinkedAxesDemo {
                 self.plot_pressure(ui);
                 self.plot_co2(ui);
                 self.plot_humidity(ui);
-                self.plot_battery(ui)
+                if self.show_battery {
+                    self.plot_battery(ui);
+                }
+                ui.response()
             })
             .inner
     }
 
     fn plot_generic(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         title: &str,
         line_color: Color32,
@@ -78,7 +96,7 @@ impl LinkedAxesDemo {
     ) -> Response {
         let link_group_id = ui.id().with(PLOT_LINK_AXIS_NAME);
 
-        let response = Plot::new(title)
+        let plot = Plot::new(title)
             .width(PLOT_WIDTH)
             .height(PLOT_HEIGHT)
             .link_axis(link_group_id, Vec2b::new(true, false))
@@ -87,12 +105,33 @@ impl LinkedAxesDemo {
             .label_formatter(label_formatter)
             .x_axis_formatter(x_axis_formatter)
             .y_axis_min_width(60.0)
-            .y_axis_formatter(y_axis_formatter)
+            .y_axis_formatter(y_axis_formatter);
+
+        let plot = if self.initialized {
+            plot
+        } else {
+            self.initialized = true;
+            match self.last_refresh_time() {
+                Some(last_refresh_time) => plot.default_x_bounds(
+                    (last_refresh_time - jiff::SignedDuration::from_hours(5)).as_microsecond()
+                        as f64,
+                    last_refresh_time.as_microsecond() as f64,
+                ),
+                None => plot,
+            }
+        };
+
+        let response = plot
             .show(ui, |plot_ui| {
                 let data = self
                     .records
                     .iter()
-                    .map(|record| [record.timestamp_millis(), record_point_extractor(record)])
+                    .map(|record| {
+                        [
+                            record.timestamp_microsecond() as f64,
+                            record_point_extractor(record),
+                        ]
+                    })
                     .collect();
                 let line = Line::new(title, PlotPoints::new(data))
                     .fill(-100.0)
@@ -138,14 +177,14 @@ impl LinkedAxesDemo {
         response
     }
 
-    fn plot_temperature(&self, ui: &mut egui::Ui) -> Response {
+    fn plot_temperature(&mut self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
             "Temperature",
             Color32::GREEN,
             |_name, point| {
-                let nanosecond = (point.x * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (point.x) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 let timestamp = timestamp.round((Unit::Minute, 1)).unwrap_or(timestamp);
                 let datetime = timestamp.to_zoned(TimeZone::UTC);
                 let formatted = strtime::format("%a, %-d %b %Y %T", &datetime).unwrap();
@@ -153,8 +192,8 @@ impl LinkedAxesDemo {
             },
             |mark, _range| format!("{:.0}°C", mark.value),
             |mark, _range| {
-                let nanosecond = (mark.value * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (mark.value) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 format!("{timestamp:#}")
             },
             false,
@@ -162,14 +201,14 @@ impl LinkedAxesDemo {
         )
     }
 
-    fn plot_pressure(&self, ui: &mut egui::Ui) -> Response {
+    fn plot_pressure(&mut self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
             "Pressure",
             Color32::BLUE,
             |_name, point| {
-                let nanosecond = (point.x * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (point.x) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 let timestamp = timestamp.round((Unit::Minute, 1)).unwrap_or(timestamp);
                 let datetime = timestamp.to_zoned(TimeZone::UTC);
                 let formatted = strtime::format("%a, %-d %b %Y %T", &datetime).unwrap();
@@ -177,8 +216,8 @@ impl LinkedAxesDemo {
             },
             |mark, _range| format!("{:.0} hPa", mark.value),
             |mark, _range| {
-                let nanosecond = (mark.value * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (mark.value) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 format!("{timestamp:#}")
             },
             false,
@@ -186,14 +225,14 @@ impl LinkedAxesDemo {
         )
     }
 
-    fn plot_co2(&self, ui: &mut egui::Ui) -> Response {
+    fn plot_co2(&mut self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
             "CO₂",
             Color32::WHITE,
             |_name, point| {
-                let nanosecond = (point.x * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (point.x) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 let timestamp = timestamp.round((Unit::Minute, 1)).unwrap_or(timestamp);
                 let datetime = timestamp.to_zoned(TimeZone::UTC);
                 let formatted = strtime::format("%a, %-d %b %Y %T", &datetime).unwrap();
@@ -201,8 +240,8 @@ impl LinkedAxesDemo {
             },
             |mark, _range| format!("{:.0} ppm", mark.value),
             |mark, _range| {
-                let nanosecond = (mark.value * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (mark.value) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 format!("{timestamp:#}")
             },
             false,
@@ -210,14 +249,14 @@ impl LinkedAxesDemo {
         )
     }
 
-    fn plot_humidity(&self, ui: &mut egui::Ui) -> Response {
+    fn plot_humidity(&mut self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
             "Humidity",
             Color32::CYAN,
             |_name, point| {
-                let nanosecond = (point.x * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (point.x) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 let timestamp = timestamp.round((Unit::Minute, 1)).unwrap_or(timestamp);
                 let datetime = timestamp.to_zoned(TimeZone::UTC);
                 let formatted = strtime::format("%a, %-d %b %Y %T", &datetime).unwrap();
@@ -225,8 +264,8 @@ impl LinkedAxesDemo {
             },
             |mark, _range| format!("{:.0} %", mark.value),
             |mark, _range| {
-                let nanosecond = (mark.value * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = (mark.value) as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 format!("{timestamp:#}")
             },
             false,
@@ -234,14 +273,14 @@ impl LinkedAxesDemo {
         )
     }
 
-    fn plot_battery(&self, ui: &mut egui::Ui) -> Response {
+    fn plot_battery(&mut self, ui: &mut egui::Ui) -> Response {
         self.plot_generic(
             ui,
             "Battery",
             Color32::YELLOW,
             |_name, point| {
-                let nanosecond = (point.x * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = point.x as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 let timestamp = timestamp.round((Unit::Minute, 1)).unwrap_or(timestamp);
                 let datetime = timestamp.to_zoned(TimeZone::UTC);
                 let formatted = strtime::format("%a, %-d %b %Y %T", &datetime).unwrap();
@@ -249,8 +288,8 @@ impl LinkedAxesDemo {
             },
             |mark, _range| format!("{:.0} %", mark.value),
             |mark, _range| {
-                let nanosecond = (mark.value * 1_000_000.0) as i128;
-                let timestamp = jiff::Timestamp::from_nanosecond(nanosecond).unwrap();
+                let microsecond = mark.value as i64;
+                let timestamp = jiff::Timestamp::from_microsecond(microsecond).unwrap();
                 format!("{timestamp:#}")
             },
             true,
@@ -269,8 +308,10 @@ struct Record {
 }
 
 impl Record {
-    fn timestamp_millis(&self) -> f64 {
-        self.timestamp_nanos as f64 / 1_000_000.0
+    fn timestamp_microsecond(&self) -> i64 {
+        jiff::Timestamp::from_nanosecond(self.timestamp_nanos as i128)
+            .unwrap()
+            .as_microsecond()
     }
 }
 
